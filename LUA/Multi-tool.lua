@@ -17,11 +17,17 @@ local FILTER_TINT = "CST Silhouette Tint"
 local FILTER_GLOW_A = "CST Glow A"
 local FILTER_GLOW_B = "CST Glow B"
 local FILTER_STROBE = "CST Strobe"
+local FILTER_VOICE_PITCH = "CST Voice Pitch"
 
 local BG_FILTER_CANDIDATES = {
 	"background_removal",
 	"background_remove_filter",
 	"obs_backgroundremoval_filter"
+}
+
+local PITCH_FILTER_CANDIDATES = {
+	"pitch_shift_filter",
+	"obs_pitch_shift_filter"
 }
 
 local LOG_LEVELS = {
@@ -51,7 +57,7 @@ local st = {
 
 	silhouette_preset = "Electric Purple",
 	custom_color = 0xFFFF00FF, -- ARGB
-	opacity = 85,
+	opacity = 24,
 	glow_enable = true,
 	outline_enable = true,
 	reactive_enable = true,
@@ -68,6 +74,8 @@ local st = {
 	silence_seconds = 4,
 	voice_threshold_db = -34,
 	motion_enable = false,
+	voice_pitch_enable = false,
+	voice_pitch_semitones = 0,
 
 	nl_command = "",
 	selected_preset_name = "Just Chatting",
@@ -90,6 +98,7 @@ local runtime = {
 	audio_norm = 0.0,
 
 	bg_filter_id = nil,
+	pitch_filter_id = nil,
 
 	meter = nil,
 	meter_attached_source = "",
@@ -140,22 +149,22 @@ local COLOR_PRESETS = {
 -- User-named presets (saved in script settings)
 local NAMED_PRESETS = {
 	["Just Chatting"] = {
-		color = 0xFFFF00FF, opacity = 82, glow = true, outline = true,
+		color = 0xFFFF00FF, opacity = 22, glow = true, outline = true,
 		reactive = true, random_burst = false, strobe = false,
 		cycle = false, cycle_seconds = 8, bg_remove = true
 	},
 	["Gaming"] = {
-		color = 0xFF39FF14, opacity = 90, glow = true, outline = true,
+		color = 0xFF39FF14, opacity = 28, glow = true, outline = true,
 		reactive = true, random_burst = true, strobe = false,
 		cycle = true, cycle_seconds = 8, bg_remove = true
 	},
 	["High Energy"] = {
-		color = 0xFFFF0033, opacity = 95, glow = true, outline = true,
+		color = 0xFFFF0033, opacity = 34, glow = true, outline = true,
 		reactive = true, random_burst = true, strobe = true,
 		cycle = true, cycle_seconds = 5, bg_remove = true
 	},
 	["Chill"] = {
-		color = 0xFF00BFFF, opacity = 72, glow = true, outline = false,
+		color = 0xFF00BFFF, opacity = 18, glow = true, outline = false,
 		reactive = true, random_burst = false, strobe = false,
 		cycle = false, cycle_seconds = 10, bg_remove = true
 	}
@@ -434,6 +443,81 @@ local function detect_bg_filter_id_for_source(source)
 	return nil
 end
 
+local function detect_pitch_filter_id_for_source(source)
+	-- 1) Probe existing filters
+	local flist = obs.obs_source_enum_filters(source)
+	if flist ~= nil then
+		for _, f in ipairs(flist) do
+			local id = obs.obs_source_get_id(f)
+			for _, cand in ipairs(PITCH_FILTER_CANDIDATES) do
+				if id == cand then
+					obs.source_list_release(flist)
+					return cand
+				end
+			end
+		end
+		obs.source_list_release(flist)
+	end
+
+	-- 2) Probe by create_private
+	for _, cand in ipairs(PITCH_FILTER_CANDIDATES) do
+		local ok, tmp = pcall(function()
+			local d = obs.obs_data_create()
+			local t = obs.obs_source_create_private(cand, "__cst_probe_pitch__", d)
+			obs.obs_data_release(d)
+			return t
+		end)
+		if ok and tmp ~= nil then
+			obs.obs_source_release(tmp)
+			return cand
+		end
+	end
+
+	return nil
+end
+
+local function apply_voice_pitch_filter()
+	if st.audio_source == "" then
+		return false
+	end
+
+	local ok = with_source(st.audio_source, function(src)
+		runtime.pitch_filter_id = detect_pitch_filter_id_for_source(src)
+
+		if runtime.pitch_filter_id == nil then
+			remove_filter_if_exists(src, FILTER_VOICE_PITCH)
+			return false
+		end
+
+		if not st.voice_pitch_enable then
+			remove_filter_if_exists(src, FILTER_VOICE_PITCH)
+			return true
+		end
+
+		local semi = clamp(st.voice_pitch_semitones, -12, 12)
+		local ratio = 2 ^ (semi / 12.0)
+		local pitch_settings = {
+			semitones = semi,
+			pitch = ratio,
+			amount = semi
+		}
+
+		local pf, created = ensure_filter(src, runtime.pitch_filter_id, FILTER_VOICE_PITCH, pitch_settings)
+		if pf ~= nil then
+			obs.obs_source_set_enabled(pf, true)
+			if created then
+				logi("Voice pitch filter created using id '" .. runtime.pitch_filter_id .. "'.")
+			end
+			obs.obs_source_release(pf)
+			return true
+		end
+
+		return false
+	end)
+
+	return ok and true or false
+end
+
 local function bg_threshold_value(preset)
 	if preset == "Soft" then return 0.40 end
 	if preset == "Aggressive" then return 0.72 end
@@ -457,7 +541,8 @@ local function apply_silhouette_pipeline()
 
 	local ok = with_source(st.webcam_source, function(src)
 		local base_color = preset_color_by_name(st.silhouette_preset)
-		local opacity = clamp(st.opacity, 0, 100)
+		-- Hard-cap opacity for a transparent look that never blocks the camera.
+		local opacity = clamp(st.opacity, 0, 45)
 		local glow_strength = st.glow_enable and 35 or 0
 		local outline_strength = st.outline_enable and 25 or 0
 
@@ -936,7 +1021,7 @@ local function random_crazy_mode()
 
 	st.silhouette_preset = p.name
 	st.custom_color = p.color
-	st.opacity = math.random(65, 98)
+	st.opacity = math.random(16, 36)
 	st.glow_enable = true
 	st.outline_enable = (math.random() > 0.25)
 	st.reactive_enable = true
@@ -1018,6 +1103,21 @@ local function run_health_check()
 	else
 		logh("Background removal plugin not detected; feature gracefully disabled.")
 		warn_count = warn_count + 1
+	end
+
+	-- Voice pitch diagnostics
+	local pitch_ok = apply_voice_pitch_filter()
+	if st.voice_pitch_enable then
+		if pitch_ok and runtime.pitch_filter_id ~= nil then
+			logh("Voice pitch changer active: " .. st.voice_pitch_semitones .. " semitones")
+			ok_count = ok_count + 1
+		else
+			logh("Voice pitch changer requested but pitch filter is unavailable.")
+			warn_count = warn_count + 1
+		end
+	else
+		logh("Voice pitch changer is currently disabled.")
+		ok_count = ok_count + 1
 	end
 
 	-- Audio meter diagnostics
@@ -1139,13 +1239,30 @@ local function apply_natural_language_command(cmd)
 		changes = changes + 1
 	end
 
+	-- Voice changer / pitch
+	if contains(c, "voice changer") or contains(c, "pitch") then
+		if contains(c, "disable") or contains(c, "normal voice") or contains(c, "reset") then
+			st.voice_pitch_enable = false
+			st.voice_pitch_semitones = 0
+			changes = changes + 1
+		elseif contains(c, "low to high") or contains(c, "higher") or contains(c, "high pitch") then
+			st.voice_pitch_enable = true
+			st.voice_pitch_semitones = 6
+			changes = changes + 1
+		elseif contains(c, "high to low") or contains(c, "deeper") or contains(c, "low pitch") then
+			st.voice_pitch_enable = true
+			st.voice_pitch_semitones = -6
+			changes = changes + 1
+		end
+	end
+
 	-- Silhouette intensity hints
 	if contains(c, "silhouette") then
 		if contains(c, "strong") or contains(c, "intense") then
-			st.opacity = 94
+			st.opacity = 40
 			changes = changes + 1
 		elseif contains(c, "soft") or contains(c, "subtle") then
-			st.opacity = 70
+			st.opacity = 16
 			changes = changes + 1
 		end
 	end
@@ -1160,6 +1277,7 @@ local function apply_natural_language_command(cmd)
 	end
 
 	attach_audio_meter_if_possible()
+	apply_voice_pitch_filter()
 	apply_silhouette_pipeline()
 
 	logm(string.format("Applied NL command (%d change(s)): %s", changes, cmd))
@@ -1211,8 +1329,8 @@ local function apply_reactive_adjustments()
 	local base_color = preset_color_by_name(st.silhouette_preset)
 	local hot_color = lerp_color(base_color, 0xFFFFFFFF, clamp(env * 0.35, 0, 0.35))
 	local base_opacity = st.opacity
-	local reactive_boost = st.reactive_enable and math.floor(env * 20) or 0
-	local new_opacity = clamp(base_opacity + reactive_boost, 0, 100)
+	local reactive_boost = st.reactive_enable and math.floor(env * 8) or 0
+	local new_opacity = clamp(base_opacity + reactive_boost, 0, 45)
 
 	with_source(st.webcam_source, function(src)
 		local tint = get_filter_by_name(src, FILTER_TINT)
@@ -1228,7 +1346,7 @@ local function apply_reactive_adjustments()
 		if glowA ~= nil then
 			update_filter_settings(glowA, {
 				color = hot_color,
-				opacity = clamp(math.floor(new_opacity * 0.55 + env * 20), 0, 100)
+				opacity = clamp(math.floor(new_opacity * 0.45 + env * 8), 0, 45)
 			})
 			obs.obs_source_release(glowA)
 		end
@@ -1237,7 +1355,7 @@ local function apply_reactive_adjustments()
 		if glowB ~= nil then
 			update_filter_settings(glowB, {
 				color = lerp_color(base_color, 0xFFFFFFFF, 0.24 + env * 0.20),
-				opacity = clamp(math.floor(new_opacity * 0.30 + env * 15), 0, 100)
+				opacity = clamp(math.floor(new_opacity * 0.28 + env * 6), 0, 45)
 			})
 			obs.obs_source_release(glowB)
 		end
@@ -1251,10 +1369,10 @@ local function apply_reactive_adjustments()
 
 			local strobe = get_filter_by_name(src, FILTER_STROBE)
 			if strobe ~= nil then
-				local val = runtime.strobe_state and 100 or 0
+				local val = runtime.strobe_state and 35 or 0
 				update_filter_settings(strobe, {
 					opacity = val,
-					brightness = runtime.strobe_state and 0.10 or 0.00
+					brightness = runtime.strobe_state and 0.05 or 0.00
 				})
 				obs.obs_source_set_enabled(strobe, true)
 				obs.obs_source_release(strobe)
@@ -1279,7 +1397,7 @@ local function do_random_burst_if_needed()
 	with_source(st.webcam_source, function(src)
 		local tint = get_filter_by_name(src, FILTER_TINT)
 		if tint ~= nil then
-			update_filter_settings(tint, { color = p.color, opacity = clamp(st.opacity + 12, 0, 100) })
+			update_filter_settings(tint, { color = p.color, opacity = clamp(st.opacity + 5, 0, 45) })
 			obs.obs_source_release(tint)
 		end
 	end)
@@ -1436,6 +1554,30 @@ local function cb_chat_toggle(props, p)
 	return true
 end
 
+local function cb_pitch_low_to_high(props, p)
+	st.voice_pitch_enable = true
+	st.voice_pitch_semitones = 6
+	apply_voice_pitch_filter()
+	logi("Voice changer set: Low -> High (+6 semitones)")
+	return true
+end
+
+local function cb_pitch_high_to_low(props, p)
+	st.voice_pitch_enable = true
+	st.voice_pitch_semitones = -6
+	apply_voice_pitch_filter()
+	logi("Voice changer set: High -> Low (-6 semitones)")
+	return true
+end
+
+local function cb_pitch_reset(props, p)
+	st.voice_pitch_enable = false
+	st.voice_pitch_semitones = 0
+	apply_voice_pitch_filter()
+	logi("Voice changer reset to normal.")
+	return true
+end
+
 local function cb_assign_hotkeys(props, p)
 	-- OBS does not expose a stable Lua API to assign key combos directly across all builds.
 	-- We register all hotkeys with clear labels so users can bind them quickly in OBS Hotkeys.
@@ -1523,6 +1665,7 @@ Features:
 - Natural Language command box: type plain English and hit Apply Magic
 - Background removal plugin integration (auto-detect + graceful fallback)
 - Scene/source automation (voice activity + basic motion visibility trigger)
+- Voice changer (low-to-high / high-to-low pitch shift)
 - Media/chat overlay controls
 - Named preset save/load system
 - Health check and diagnostics logging
@@ -1555,7 +1698,7 @@ function script_defaults(settings)
 
 	obs.obs_data_set_string(settings, "silhouette_preset", "Electric Purple")
 	obs.obs_data_set_int(settings, "custom_color", 0xFFFF00FF)
-	obs.obs_data_set_int(settings, "opacity", 85)
+	obs.obs_data_set_int(settings, "opacity", 24)
 	obs.obs_data_set_bool(settings, "glow_enable", true)
 	obs.obs_data_set_bool(settings, "outline_enable", true)
 	obs.obs_data_set_bool(settings, "reactive_enable", true)
@@ -1572,6 +1715,8 @@ function script_defaults(settings)
 	obs.obs_data_set_int(settings, "silence_seconds", 4)
 	obs.obs_data_set_double(settings, "voice_threshold_db", -34.0)
 	obs.obs_data_set_bool(settings, "motion_enable", false)
+	obs.obs_data_set_bool(settings, "voice_pitch_enable", false)
+	obs.obs_data_set_int(settings, "voice_pitch_semitones", 0)
 
 	obs.obs_data_set_string(settings, "nl_command", "")
 	obs.obs_data_set_string(settings, "selected_preset_name", "Just Chatting")
@@ -1608,6 +1753,16 @@ function script_properties()
 	fill_source_list_property(p_motion, "video_input")
 
 	obs.obs_properties_add_button(props, "btn_refresh", "Refresh Source List", cb_refresh)
+
+	-- Voice changer group
+	local g_voice = obs.obs_properties_create()
+	obs.obs_properties_add_bool(g_voice, "voice_pitch_enable", "Enable Voice Changer")
+	obs.obs_properties_add_int_slider(g_voice, "voice_pitch_semitones", "Pitch Shift (Semitones)", -12, 12, 1)
+	obs.obs_properties_add_button(g_voice, "btn_pitch_low_to_high", "Low -> High Voice", cb_pitch_low_to_high)
+	obs.obs_properties_add_button(g_voice, "btn_pitch_high_to_low", "High -> Low Voice", cb_pitch_high_to_low)
+	obs.obs_properties_add_button(g_voice, "btn_pitch_reset", "Reset Voice Pitch", cb_pitch_reset)
+	obs.obs_properties_add_group(props, "voice_group", "Voice Changer",
+		obs.OBS_GROUP_NORMAL, g_voice)
 
 	-- Silhouette & Effects group
 	local g_sil = obs.obs_properties_create()
@@ -1729,12 +1884,15 @@ function script_update(settings)
 	st.silence_seconds = obs.obs_data_get_int(settings, "silence_seconds")
 	st.voice_threshold_db = obs.obs_data_get_double(settings, "voice_threshold_db")
 	st.motion_enable = obs.obs_data_get_bool(settings, "motion_enable")
+	st.voice_pitch_enable = obs.obs_data_get_bool(settings, "voice_pitch_enable")
+	st.voice_pitch_semitones = obs.obs_data_get_int(settings, "voice_pitch_semitones")
 
 	st.nl_command = obs.obs_data_get_string(settings, "nl_command")
 	st.selected_preset_name = obs.obs_data_get_string(settings, "selected_preset_name")
 	st.diagnostics_enable = obs.obs_data_get_bool(settings, "diagnostics_enable")
 
 	attach_audio_meter_if_possible()
+	apply_voice_pitch_filter()
 	apply_silhouette_pipeline()
 end
 
@@ -1749,6 +1907,7 @@ function script_load(settings)
 
 	obs.timer_add(main_tick, 100)
 	attach_audio_meter_if_possible()
+	apply_voice_pitch_filter()
 	apply_silhouette_pipeline()
 
 	logi("Loaded " .. SCRIPT_TAG .. " version " .. SCRIPT_VER)

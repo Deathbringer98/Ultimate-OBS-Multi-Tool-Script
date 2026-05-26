@@ -1,6 +1,10 @@
+# README
+
 ## Crazy Streamer Tool for OBS Studio
 
 Single-file OBS Lua control panel for silhouette FX, automation, media/chat controls, natural-language commands, presets, and diagnostics.
+
+Now includes a built-in Voice Changer (pitch shift) with low-to-high and high-to-low quick buttons.
 
 ## Setup
 
@@ -22,6 +26,22 @@ Single-file OBS Lua control panel for silhouette FX, automation, media/chat cont
 - cycle colors every 8 seconds and enable sound reactive glow
 - enable strobe flash and random burst
 - disable glow and disable strobe
+- enable voice changer high pitch
+- set voice changer high to low
+- reset voice to normal
+
+## Voice Changer Setup
+
+1. Select your mic in Audio Source.
+2. Open the Voice Changer group in the script panel.
+3. Enable Voice Changer.
+4. Use one of these options:
+  1. Pitch Shift slider from -12 to +12 semitones
+  2. Low -> High Voice button
+  3. High -> Low Voice button
+5. Use Reset Voice Pitch to return to normal.
+
+If your OBS build does not expose the pitch shift filter, the script will fail gracefully and keep everything else working.
 
 ## Recommended Filter Order (on webcam source)
 
@@ -84,7 +104,7 @@ Build a fun baseline look
 - In Silhouette and Effects:
 
 Color Preset: start with Electric Purple or Neon Green.
-Opacity: 80 to 90.
+Opacity: 15 to 35 (recommended for transparent color overlays).
 Enable Glow: on.
 Enable Outline: on.
 Enable Sound Reactive Pulse: on.
@@ -143,6 +163,8 @@ Click Health Check.
 Watch OBS logs for any warnings.
 
 If effect order looks odd play around with it till you get something you like.
+
+If colors still feel too solid on your camera, reduce Opacity to 10 to 20.
 
 Fun starter combo:
 
